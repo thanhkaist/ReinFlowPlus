@@ -37,7 +37,7 @@ train:
     warmup_steps: 1
     min_lr: 1e-4
   save_model_freq: 100
-  test_freq: 100
+  test_freq: 20
 wandb:
   entity: ${oc.env:REINFLOW_WANDB_ENTITY}
   project: gym-${env}-pretrain
