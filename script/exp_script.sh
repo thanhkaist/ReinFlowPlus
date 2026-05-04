@@ -31,3 +31,10 @@ python script/run.py --config-dir=cfg/gym/finetune/kitchen-mixed-v0 --config-nam
 # kitchen-partial-v0
 python script/run.py --config-dir=cfg/gym/finetune/kitchen-partial-v0 --config-name=ft_ppo_diffusion_mlp.yaml device=cuda:2
 python script/run.py --config-dir=cfg/gym/finetune/kitchen-partial-v0 --config-name=ft_ppo_shortcut_mlp.yaml device=cuda:3
+
+
+# can, lift, square, transport
+python script/run.py --config-dir=cfg/robomimic/finetune/can --config-name=ft_ppo_reflow_mlp_img.yaml device=cuda:0 train.trust_region_mode=spo train.spo_clip_coef=0.01
+python script/run.py --config-dir=cfg/robomimic/finetune/lift --config-name=ft_ppo_reflow_mlp_img.yaml device=cuda:1 train.trust_region_mode=spo train.spo_clip_coef=0.01
+python script/run.py --config-dir=cfg/robomimic/finetune/square --config-name=ft_ppo_reflow_mlp_img.yaml device=cuda:2 train.trust_region_mode=spo train.spo_clip_coef=0.01
+python script/run.py --config-dir=cfg/robomimic/finetune/transport --config-name=ft_ppo_reflow_mlp_img.yaml device=cuda:3 train.trust_region_mode=spo train.spo_clip_coef=0.01
