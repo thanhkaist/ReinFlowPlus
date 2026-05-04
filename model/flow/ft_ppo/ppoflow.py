@@ -177,6 +177,10 @@ class PPOFlow(nn.Module):
             print(f"actor_network_data={actor_network_data.keys()}")
         else:
             logging.warning("No actor policy path provided. Not loading any actor policy. Start from randomly initialized policy.")
+
+    def _clamp_sampling_std(self, std: torch.Tensor) -> torch.Tensor:
+        """Keep sampling-time and replay-time std handling identical."""
+        return torch.clamp(std, min=self.min_sampling_denoising_std)
     
     @torch.no_grad()
     def sample_first_point(self, B:int)->Tuple[torch.Tensor, torch.Tensor]:
@@ -253,7 +257,7 @@ class PPOFlow(nn.Module):
             xt      = x_chain[:,i]                                              # [batchsize, self.horizon_steps , self.action_dim]
             vt, nt  =self.actor_ft.forward(xt, t, cond, True, i)                # [batchsize, self.horizon_steps, self.action_dim]
             chains_vel[:,i]  = vt.flatten(-2,-1)                                # [batchsize, self.horizon_steps x self.action_dim]
-            chains_stds[:,i] = nt                                               # [batchsize, self.horizon_steps x self.action_dim]
+            chains_stds[:,i] = self._clamp_sampling_std(nt)                      # [batchsize, self.horizon_steps x self.action_dim]
             logprob_steps+=1
         chains_mean = (chains_prev + chains_vel * dt)                           # [batchsize, self.inference_steps, self.horizon_steps x self.action_dim]
         if clip_intermediate_actions:
@@ -337,7 +341,14 @@ class PPOFlow(nn.Module):
                 log_prob_list = []
         
         # sample first point
-        xt, log_prob_init = self.sample_first_point(B)
+
+        # if self.eval_mode we zero out the noise for evaluation, so the first point is always the mean of the initial distribution. In this case, we don't need to calculate logprob for the first point since it's always the same and doesn't contribute to policy improvement. If not self.eval_mode, we sample from the initial distribution and calculate logprob accordingly, and also account for the initial stochasticity in policy improvement.
+        if eval_mode:
+            xt = torch.zeros(B, self.horizon_steps, self.action_dim, device=self.device)
+            # log_prob at 0 for d-dimensional gaussian with std=1 is -0.5*d*log(2*pi) approximately -1.418*d. 
+            log_prob_init = -0.5* self.act_dim_total * torch.log(torch.tensor(2*3.1415926, device=self.device)).expand(B)
+        else:
+            xt, log_prob_init = self.sample_first_point(B)
         if ret_logprob and account_for_initial_stochasticity:
             log_prob+=log_prob_init
             log_prob_steps+=1
@@ -357,7 +368,7 @@ class PPOFlow(nn.Module):
             
             # add noise during training, also prevent too deterministic policies
             std = nt.unsqueeze(-1).reshape(xt.shape)
-            std = torch.clamp(std, min=self.min_sampling_denoising_std)    # each value in [self.min_sampling_denoising_std, self.max_logprob_denoising_std]
+            std = self._clamp_sampling_std(std)    # each value in [self.min_sampling_denoising_std, self.max_logprob_denoising_std]
             dist = Normal(xt, std)
             if not eval_mode:
                 xt = dist.sample().clamp_(dist.loc - self.randn_clip_value * dist.scale,
@@ -394,7 +405,6 @@ class PPOFlow(nn.Module):
                 return (xt, x_chain)
             return xt
       
-    
     def loss(
         self,
         obs,
@@ -409,103 +419,132 @@ class PPOFlow(nn.Module):
         normalize_act_space_dimension=False,
         verbose=True,
         clip_intermediate_actions=True,
-        account_for_initial_stochasticity=True
+        account_for_initial_stochasticity=True,
+        trust_region_mode="spo",      # "ppo" | "spo" | "aspo"
+        spo_clip_coef=0.05
     ):
-        """
-        PPO loss
-        obs: dict with key state/rgb; more recent obs at the end
-            "state": (B, To, Do)
-            "rgb": (B, To, C, H, W)
-        chains: (B, K+1, Ta, Da)
-        returns: (B, )
-        values: (B,)
-        advantages: (B,)
-        oldlogprobs: (B,)
-        use_bc_loss: whether to add BC regularization loss
-        normalize_act_space_dimension: whether to normalize logprobs and entropy rates over all horiton steps and action dimensions
-        reward_horizon: action horizon that backpropagates gradient, omitted for now.
-        Here, B = n_steps x n_envs
-        """
-        
-        newlogprobs, entropy, noise_std = self.get_logprobs(obs, 
-                                                            chains, 
-                                                            get_entropy=True, 
-                                                            normalize_denoising_horizon=normalize_denoising_horizon,
-                                                            normalize_act_space_dimension=normalize_act_space_dimension, 
-                                                            verbose_entropy_stats=verbose, 
-                                                            clip_intermediate_actions=clip_intermediate_actions,
-                                                            account_for_initial_stochasticity=account_for_initial_stochasticity)
+
+        # ====== LOGPROBS ======
+        newlogprobs, entropy, noise_std = self.get_logprobs(
+            obs,
+            chains,
+            get_entropy=True,
+            normalize_denoising_horizon=normalize_denoising_horizon,
+            normalize_act_space_dimension=normalize_act_space_dimension,
+            verbose_entropy_stats=verbose,
+            clip_intermediate_actions=clip_intermediate_actions,
+            account_for_initial_stochasticity=account_for_initial_stochasticity
+        )
+
         if verbose:
-            log.info(f"oldlogprobs.min={oldlogprobs.min():5.3f}, max={oldlogprobs.max():5.3f}, std of oldlogprobs={oldlogprobs.std():5.3f}")
-            log.info(f"newlogprobs.min={newlogprobs.min():5.3f}, max={newlogprobs.max():5.3f}, std of newlogprobs={newlogprobs.std():5.3f}")
-        
-        
+            log.info(f"oldlogprobs.min={oldlogprobs.min():5.3f}, max={oldlogprobs.max():5.3f}, std={oldlogprobs.std():5.3f}")
+            log.info(f"newlogprobs.min={newlogprobs.min():5.3f}, max={newlogprobs.max():5.3f}, std={newlogprobs.std():5.3f}")
+
+        # Clamp logprobs
         newlogprobs = newlogprobs.clamp(min=self.logprob_min, max=self.logprob_max)
         oldlogprobs = oldlogprobs.clamp(min=self.logprob_min, max=self.logprob_max)
-        if verbose:
-            if oldlogprobs.min() < self.logprob_min: log.info(f"WARNINIG: old logprobs too low, potential policy collapse detected, should encourage exploration.")
-            if newlogprobs.min() < self.logprob_min: log.info(f"WARNINIG: new logprobs too low, potential policy collapse detected, should encourage exploration.")
-            if newlogprobs.max() > self.logprob_max: log.info(f"WARNINIG: new logprobs too high")
-            if oldlogprobs.max() > self.logprob_max: log.info(f"WARNINIG: old logprobs too high")
-        # empirically we noticed that when the min of logprobs gets too negative (say, below -3) or when the std gets larger than 0.5 (usually these two events happen simultaneously) t
-        # the perfomance drops. 
-        # batch normalize advantages
+
+        # ====== ADVANTAGE NORMALIZATION ======
         advantages = (advantages - advantages.mean()) / (advantages.std() + 1e-8)
+
         if verbose:
             with torch.no_grad():
-                advantage_stats = {
-                    "mean":f"{advantages.mean().item():2.3f}",
-                    "std": f"{advantages.std().item():2.3f}",
-                    "max": f"{advantages.max().item():2.3f}",
-                    "min": f"{advantages.min().item():2.3f}"
-                }
-                log.info(f"Advantage stats: {advantage_stats}")
-                corr = torch.corrcoef(torch.stack([advantages, returns]))[0,1].item()
-                log.info(f"Advantage-Reward Correlation: {corr:.2f}")
-        
-        # Get ratio
+                log.info(f"Adv mean={advantages.mean():.3f}, std={advantages.std():.3f}")
+
+        # ====== RATIO ======
         logratio = newlogprobs - oldlogprobs
+        logratio = torch.clamp(logratio, -10, 10)   # ổn định training
         ratio = logratio.exp()
-        
-        # Get kl difference and whether value clipped
+
+        # ====== KL & CLIPFRAC ======
         with torch.no_grad():
             approx_kl = ((ratio - 1) - logratio).mean()
+
+        # ====== POLICY LOSS ======
+        if trust_region_mode == "ppo":
+            pg_loss1 = -advantages * ratio
+            pg_loss2 = -advantages * torch.clamp(
+                ratio, 1 - self.clip_ploss_coef, 1 + self.clip_ploss_coef
+            )
+            pg_loss = torch.max(pg_loss1, pg_loss2).mean()
+
             clipfrac = ((ratio - 1.0).abs() > self.clip_ploss_coef).float().mean().item()
 
-        # Policy loss
-        pg_loss1 = -advantages * ratio
-        pg_loss2 = -advantages * torch.clamp(ratio, 1 - self.clip_ploss_coef, 1 + self.clip_ploss_coef)
-        pg_loss = torch.max(pg_loss1, pg_loss2).mean()
+        elif trust_region_mode == "spo":
+            spo_obj = advantages * ratio - (advantages.abs() / (2.0 * spo_clip_coef)) * (ratio - 1.0) ** 2
+            pg_loss = (-spo_obj).mean()
 
-        # Value loss
+            clipfrac = 0.0
+
+        elif trust_region_mode == "aspo":
+            # PPO part
+            pg_loss1 = -advantages * ratio
+            pg_loss2 = -advantages * torch.clamp(
+                ratio, 1 - self.clip_ploss_coef, 1 + self.clip_ploss_coef
+            )
+            ppo_loss = torch.max(pg_loss1, pg_loss2)
+
+            # SPO part
+            spo_obj = advantages * ratio - (advantages.abs() / (2.0 * spo_clip_coef)) * (ratio - 1.0) ** 2
+            spo_loss = -spo_obj
+
+            # Combine
+            pg_loss = torch.where(advantages > 0, ppo_loss, spo_loss).mean()
+
+            # clipfrac chỉ tính phần PPO
+            positive_mask = advantages > 0
+            if positive_mask.any():
+                clipfrac = ((ratio - 1.0).abs() > self.clip_ploss_coef)[positive_mask].float().mean().item()
+            else:
+                clipfrac = 0.0
+
+        else:
+            raise ValueError(f"Invalid trust_region_mode: {trust_region_mode}")
+
+        # ====== VALUE LOSS ======
         newvalues = self.critic(obs).view(-1)
         v_loss = 0.5 * ((newvalues - returns) ** 2).mean()
-        if self.clip_vloss_coef: # better not use. 
-            v_clipped = torch.clamp(newvalues, oldvalues -self.clip_vloss_coef, oldvalues + self.clip_vloss_coef)
-            v_loss = 0.5 *torch.max((newvalues - returns) ** 2, (v_clipped - returns) ** 2).mean()
-        if verbose:
-            with torch.no_grad():
-                mse = F.mse_loss(newvalues, returns)
-                log.info(f"Value/Reward alignment: MSE={mse.item():.3f}")
-        
-        # Entropy loss
+
+        if self.clip_vloss_coef:
+            v_clipped = torch.clamp(
+                newvalues,
+                oldvalues - self.clip_vloss_coef,
+                oldvalues + self.clip_vloss_coef
+            )
+            v_loss = 0.5 * torch.max(
+                (newvalues - returns) ** 2,
+                (v_clipped - returns) ** 2
+            ).mean()
+
+        # ====== ENTROPY ======
         entropy_loss = -entropy.mean()
-        # Monitor policy entropy distribution
-        if verbose:
-            with torch.no_grad():
-                log.info(f"Entropy Percentiles: 10%={entropy.quantile(0.1):.2f}, 50%={entropy.median():.2f}, 90%={entropy.quantile(0.9):.2f}")
-        
-        # bc loss
+
+        # ====== BC LOSS ======
         bc_loss = 0.0
         if use_bc_loss:
-            if bc_loss_type=='W2':
-                # add wasserstein divergence loss via action supervision
-                z=torch.zeros((obs['state'].shape[0], self.horizon_steps, self.action_dim), device=self.device)
-                a_ω = self.actor_old.sample_action(cond=obs, inference_steps=self.inference_steps, clip_intermediate_actions=True, act_range=[self.act_min, self.act_max],z=z)
-                a_θ = self.actor_ft.policy.sample_action(cond=obs, inference_steps=self.inference_steps, clip_intermediate_actions=True, act_range=[self.act_min, self.act_max],z=z)
-                bc_loss = F.mse_loss(a_ω.detach(), a_θ)
+            if bc_loss_type == 'W2':
+                z = torch.zeros(
+                    (obs['state'].shape[0], self.horizon_steps, self.action_dim),
+                    device=self.device
+                )
+                a_old = self.actor_old.sample_action(
+                    cond=obs,
+                    inference_steps=self.inference_steps,
+                    clip_intermediate_actions=True,
+                    act_range=[self.act_min, self.act_max],
+                    z=z
+                )
+                a_new = self.actor_ft.policy.sample_action(
+                    cond=obs,
+                    inference_steps=self.inference_steps,
+                    clip_intermediate_actions=True,
+                    act_range=[self.act_min, self.act_max],
+                    z=z
+                )
+                bc_loss = F.mse_loss(a_old.detach(), a_new)
             else:
                 raise NotImplementedError
+
         return (
             pg_loss,
             entropy_loss,
@@ -521,6 +560,8 @@ class PPOFlow(nn.Module):
             newlogprobs.max(),
             newlogprobs.std(),
             noise_std.item(),
-            newvalues.mean().item(),#Q function
+            newvalues.mean().item(),
         )
+
+
 

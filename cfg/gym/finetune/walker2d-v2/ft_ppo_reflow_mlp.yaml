@@ -14,7 +14,7 @@ hydra:
   run:
     dir: ${logdir}
 _target_: agent.finetune.reinflow.train_ppo_flow_agent.TrainPPOFlowAgent
-name: ${env_name}_ppo_reflow_mlp_ta${horizon_steps}_td${denoising_steps}
+name: ${env_name}_ppo_reflow_mlp_ta${horizon_steps}_td${denoising_steps}_${train.trust_region_mode}_${train.spo_clip_coef}_zeronoise
 logdir: ${oc.env:REINFLOW_LOG_DIR}/gym/finetune/${env_name}_ppo_reflow_mlp_ta${horizon_steps}_td${denoising_steps}_tdf${ft_denoising_steps}/${now:%Y-%m-%d}_${now:%H-%M-%S}_seed${seed}
 base_policy_path: ${oc.env:REINFLOW_LOG_DIR}/gym/pretrain/walker2d-v2/ReFlow/2025-02-06_01-39-14_D4RL/checkpoint/state_80.pt
 # ${oc.env:REINFLOW_LOG_DIR}/gym/pretrain/walker2d-v2/ReFlow/2025-02-06_01-39-14_42/checkpoint/state_1500.pt
@@ -86,6 +86,8 @@ train:
   account_for_initial_stochasticity: true
   max_noise_hold_ratio: 0.35
   max_noise_decay_ratio: 0.7
+  trust_region_mode: spo
+  spo_clip_coef: 0.1
 model:
   _target_: model.flow.ft_ppo.ppoflow.PPOFlow
   device: ${device}

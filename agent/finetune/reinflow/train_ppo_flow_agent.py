@@ -59,6 +59,10 @@ class TrainPPOFlowAgent(TrainPPOAgent):
         self.lr_schedule = cfg.train.lr_schedule
         self.clip_intermediate_actions = cfg.train.get("clip_intermediate_actions", True)
         self.account_for_initial_stochasticity = cfg.train.get('account_for_initial_stochasticity', True)
+        # trust region mode 
+        self.trust_region_mode = cfg.train.get('trust_region_mode', 'ppo')
+        self.spo_clip_coef = cfg.train.get('spo_clip_coef', 0.05)
+        
         if self.lr_schedule not in ["fixed", "adaptive_kl"]:
             raise ValueError("lr_schedule should be 'fixed' or 'adaptive_kl'")
         self.actor_lr = cfg.train.actor_lr
@@ -415,7 +419,10 @@ class TrainPPOFlowAgent(TrainPPOAgent):
                                                     normalize_act_space_dimension=self.normalize_act_space_dim,
                                                     verbose=verbose,
                                                     clip_intermediate_actions=self.clip_intermediate_actions,
-                                                    account_for_initial_stochasticity=self.account_for_initial_stochasticity)
+                                                    account_for_initial_stochasticity=self.account_for_initial_stochasticity,
+                                                    trust_region_mode=self.trust_region_mode,
+                                                    spo_clip_coef=self.spo_clip_coef
+                                                    )
             self.approx_kl = approx_kl
             if verbose:
                 log.info(f"update_epoch={update_epoch}/{self.update_epochs}, batch_id={batch_id}/{max(1, self.total_steps // self.batch_size)}, ratio={ratio:.3f}, clipfrac={clipfrac:.3f}, approx_kl={self.approx_kl:.2e}")
