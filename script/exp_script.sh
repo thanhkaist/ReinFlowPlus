@@ -38,3 +38,10 @@ python script/run.py --config-dir=cfg/robomimic/finetune/can --config-name=ft_pp
 python script/run.py --config-dir=cfg/robomimic/finetune/lift --config-name=ft_ppo_reflow_mlp_img.yaml device=cuda:1 train.trust_region_mode=spo train.spo_clip_coef=0.01
 python script/run.py --config-dir=cfg/robomimic/finetune/square --config-name=ft_ppo_reflow_mlp_img.yaml device=cuda:2 train.trust_region_mode=spo train.spo_clip_coef=0.01
 python script/run.py --config-dir=cfg/robomimic/finetune/transport --config-name=ft_ppo_reflow_mlp_img.yaml device=cuda:3 train.trust_region_mode=spo train.spo_clip_coef=0.01
+
+
+
+# Pretrain lift, transport 
+
+python script/run.py --config-dir=cfg/robomimic/pretrain/lift --config-name=pre_reflow_mlp_img.yaml device=cuda:1 
+python script/run.py --config-dir=cfg/robomimic/pretrain/square --config-name=pre_reflow_mlp_img.yaml device=cuda:2
