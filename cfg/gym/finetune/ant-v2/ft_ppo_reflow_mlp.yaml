@@ -86,7 +86,7 @@ train:
   max_noise_hold_ratio: 0.35
   max_noise_decay_ratio: 0.7
   trust_region_mode: spo
-  spo_clip_coef: 0.1
+  spo_clip_coef: 0.01
 model:
   _target_: model.flow.ft_ppo.ppoflow.PPOFlow
   device: ${device}

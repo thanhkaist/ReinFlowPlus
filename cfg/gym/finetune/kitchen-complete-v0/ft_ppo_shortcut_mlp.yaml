@@ -17,7 +17,7 @@ hydra:
   run:
     dir: ${logdir}
 _target_: agent.finetune.reinflow.train_ppo_flow_agent.TrainPPOFlowAgent
-name: ${env_name}_ppo_shortcut_mlp_ta${horizon_steps}_td${denoising_steps}_tdf${ft_denoising_steps}_seed${seed}
+name: ${env_name}_ppo_shortcut_mlp_ta${horizon_steps}_td${denoising_steps}_tdf${ft_denoising_steps}__${train.trust_region_mode}_${train.spo_clip_coef}_zeronoise_seed${seed}
 logdir: ${oc.env:REINFLOW_LOG_DIR}/gym/finetune/${env_name}_ppo_shortcut_mlp_ta${horizon_steps}_td${denoising_steps}_tdf${ft_denoising_steps}/${now:%Y-%m-%d}_${now:%H-%M-%S}_seed${seed}
 base_policy_path: ${oc.env:REINFLOW_LOG_DIR}/gym/pretrain/kitchen-complete-v0_pre_shortcut_mish_mlp_ta4_td4/2025-05-05_19-59-19_42/checkpoint/state_1500.pt
 normalization_path: ${oc.env:REINFLOW_DATA_DIR}/gym/${env_name}/normalization.npz
@@ -88,6 +88,8 @@ train:
   account_for_initial_stochasticity: true
   max_noise_hold_ratio: 0.35
   max_noise_decay_ratio: 0.7
+  trust_region_mode: spo
+  spo_clip_coef: 0.01
 model:
   _target_: model.flow.ft_ppo.pposhortcut.PPOShortCut
   device: ${device}
