@@ -2,7 +2,7 @@
 python script/run.py --config-dir=cfg/gym/finetune/hopper-v2 --config-name=ft_ppo_reflow_mlp.yaml device=cuda:0 train.trust_region_mode=spo train.spo_clip_coef=0.1
 CUDA_VISIBLE_DEVICES=0 python script/run.py --config-dir=cfg/gym/finetune/hopper-v2 --config-name=ft_ppo_shortcut_mlp.yaml device=cuda:0
 
-python script/run.py --config-dir=cfg/gym/finetune/walker2d-v2 --config-name=ft_ppo_reflow_mlp.yaml device=cuda:1 train.trust_region_mode=spo train.spo_clip_coef=0.01
+python script/run.py --config-dir=cfg/gym/finetune/walker2d-v2 --config-name=ft_ppo_reflow_mlp.yaml device=cuda:1 train.trust_region_mode=spo train.spo_clip_coef=0.05
 python script/run.py --config-dir=cfg/gym/finetune/walker2d-v2 --config-name=ft_ppo_shortcut_mlp.yaml device=cuda:1
 
 # ant-v2
