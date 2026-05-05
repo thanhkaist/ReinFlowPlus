@@ -59,6 +59,8 @@ class TrainPPOImgShortCutAgent(TrainPPOShortCutAgent):
         self.use_early_stop = True
         
         self.fix_nextvalue_augment_bug=True #False
+        self.trust_region_mode = cfg.train.get('trust_region_mode', 'spo')
+        self.spo_clip_coef = cfg.train.get('spo_clip_coef', 0.01)
         
     # overload
     def init_buffer(self):
@@ -233,7 +235,9 @@ class TrainPPOImgShortCutAgent(TrainPPOShortCutAgent):
                                                     normalize_act_space_dimension=self.normalize_act_space_dim,
                                                     verbose=verbose,
                                                     clip_intermediate_actions=self.clip_intermediate_actions,
-                                                    account_for_initial_stochasticity=self.account_for_initial_stochasticity)
+                                                    account_for_initial_stochasticity=self.account_for_initial_stochasticity,
+                                                    trust_region_mode=self.trust_region_mode,
+                                                    spo_clip_coef=self.spo_clip_coef)
             self.approx_kl = approx_kl
             if verbose:
                 log.info(f"update_epoch={update_epoch}/{self.update_epochs}, batch_id={batch_id}/{max(1, self.total_steps // self.batch_size)}, ratio={ratio:.3f}, clipfrac={clipfrac:.3f}, approx_kl={self.approx_kl:.2e}")

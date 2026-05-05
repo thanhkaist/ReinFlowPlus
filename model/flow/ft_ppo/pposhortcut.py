@@ -275,7 +275,14 @@ class PPOShortCut(PPOFlow):
                 log_prob_list = []
         
         # sample first point
-        xt, log_prob_init = self.sample_first_point(B)
+        # THANH: if self.eval_mode we zero out the noise for evaluation, so the first point is always the mean of the initial distribution. In this case, we don't need to calculate logprob for the first point since it's always the same and doesn't contribute to policy improvement. If not self.eval_mode, we sample from the initial distribution and calculate logprob accordingly, and also account for the initial stochasticity in policy improvement.
+        if eval_mode:
+            xt = torch.zeros(B, self.horizon_steps, self.action_dim, device=self.device)
+            # log_prob at 0 for d-dimensional gaussian with std=1 is -0.5*d*log(2*pi) approximately -1.418*d. 
+            log_prob_init = -0.5* self.act_dim_total * torch.log(torch.tensor(2*3.1415926, device=self.device)).expand(B)
+        else:
+            xt, log_prob_init = self.sample_first_point(B)
+
         if ret_logprob and account_for_initial_stochasticity:
             log_prob+=log_prob_init
             log_prob_steps+=1
