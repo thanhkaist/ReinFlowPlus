@@ -125,6 +125,7 @@ class TrainPPOFlowAgent(TrainPPOAgent):
             log.info("Exploration noise level bounds saved to %s" % name)
     
         self.initial_ratio_error_threshold = 1e-6 # for state based tasks, no augmentation, then the logprob ratio should be strictly 1.00 when batch=0 and epoch=0
+        self.v_warmup_itr = cfg.train.get("v_warmup_itr", 0)
 
     def init_buffer(self):
         self.buffer = PPOFlowBuffer(
@@ -146,6 +147,89 @@ class TrainPPOFlowAgent(TrainPPOAgent):
             device=self.device,
         ) 
     
+    def v_warmup(self):
+        """
+        Warmup: run v_warmup_itr iterations before the main RL loop.
+          1. Collect rollouts from the frozen pretrained policy (deterministic, no exploration noise).
+          2. Update v_loss only — no actor update.
+        """
+        if self.v_warmup_itr <= 0:
+            return None
+        log.info(
+            f"[Critic Pretrain] Starting {self.v_warmup_itr} warmup iterations "
+            f"(v_loss only, frozen pretrained policy)."
+        )
+        # Ensure env/model state is well-defined before calling reset_env()
+        self.eval_mode = True
+        self.options_venv = [{} for _ in range(self.n_envs)]
+        self.model.eval()
+
+        for warmup_itr in range(self.v_warmup_itr):
+            # 1. Collect data from the frozen pretrained policy
+            self.reset_env()
+            self.buffer.update_full_obs()
+            for step in range(self.n_steps):
+                with torch.no_grad():
+                    cond = {
+                        "state": torch.tensor(
+                            self.prev_obs_venv["state"], device=self.device, dtype=torch.float32
+                        )
+                    }
+                    value_venv = self.get_value(cond=cond)
+                    # Use pretrained policy deterministically (eval_mode=True → no exploration noise)
+                    action_samples, chains_venv, logprob_venv = self.model.get_actions(
+                        cond,
+                        eval_mode=True,
+                        save_chains=True,
+                        normalize_denoising_horizon=self.normalize_denoising_horizon,
+                        normalize_act_space_dimension=self.normalize_act_space_dim,
+                        clip_intermediate_actions=self.clip_intermediate_actions,
+                        account_for_initial_stochasticity=self.account_for_initial_stochasticity,
+                    )
+                    action_samples = action_samples.cpu().numpy()
+                    chains_venv   = chains_venv.cpu().numpy()
+                    logprob_venv  = logprob_venv.cpu().numpy()
+
+                # action_venv = action_samples[:, :self.act_steps] + 0.02*N(0,1)
+                action_venv = action_samples[:, :self.act_steps] 
+                obs_venv, reward_venv, terminated_venv, truncated_venv, info_venv = self.venv.step(action_venv)
+                self.buffer.save_full_obs(info_venv)
+                self.buffer.add(
+                    step, self.prev_obs_venv["state"], chains_venv,
+                    reward_venv, terminated_venv, truncated_venv, value_venv, logprob_venv,
+                )
+                self.prev_obs_venv = obs_venv
+            self.buffer.summarize_episode_reward()
+            self.buffer.update(obs_venv, self.model.critic)
+
+            # 2. Update v_loss only (critic update, no actor update)
+            obs, chains, returns, oldvalues, advantages, oldlogprobs = self.buffer.make_dataset()
+            total_steps = self.n_steps * self.n_envs
+            v_loss_last = torch.tensor(0.0)
+            self.model.critic.train()
+            for update_epoch in range(self.update_epochs):
+                indices = torch.randperm(total_steps, device=self.device)
+                for start in range(0, total_steps, self.batch_size):
+                    end    = start + self.batch_size
+                    inds_b = indices[start:end]
+                    obs_b     = {"state": obs[inds_b]}
+                    returns_b = returns[inds_b]
+                    newvalues = self.model.critic(obs_b).view(-1)
+                    v_loss = 0.5 * ((newvalues - returns_b) ** 2).mean()
+                    self.critic_optimizer.zero_grad()
+                    (v_loss * self.vf_coef).backward()
+                    if self.max_grad_norm:
+                        torch.nn.utils.clip_grad_norm_(self.model.critic.parameters(), self.max_grad_norm)
+                    self.critic_optimizer.step()
+                    v_loss_last = v_loss
+            self.model.eval()  # restore eval for next pretrain rollout collection
+            log.info(
+                f"[Critic Pretrain] warmup_itr={warmup_itr + 1}/{self.v_warmup_itr}, "
+                f"v_loss={v_loss_last.item():.4f}"
+            )
+        log.info("[Critic Pretrain] Warmup complete. Starting main training loop.")
+        return v_loss_last
+
     def resume_training(self):
         super().resume_training()
         if self.model.noise_scheduler_type == 'const':
@@ -162,6 +246,8 @@ class TrainPPOFlowAgent(TrainPPOAgent):
         self.buffer.reset() # as long as we put items at the right position in the buffer (determined by 'step'), the buffer automatically resets when new iteration begins (step =0). so we only need to reset in the beginning. This works only for PPO buffer, otherwise may need to reset when new iter begins.
         if self.resume:
             self.resume_training()
+
+        self.pretrain_v_loss = self.v_warmup()
         while self.itr < self.n_train_itr:
             self.prepare_video_path()
             self.set_model_mode()
@@ -403,6 +489,9 @@ class TrainPPOFlowAgent(TrainPPOAgent):
     def agent_update(self, verbose=True):
         clipfracs_list = []
         noise_std_list = []
+        # initialize v_loss from critic pretrain so train_ret_dict has a valid value even if the loop exits early
+        v_loss = self.pretrain_v_loss if self.pretrain_v_loss is not None else torch.tensor(0.0)
+        # breakpoint()
         for update_epoch, batch_id, minibatch in self.minibatch_generator() if not self.repeat_samples else self.minibatch_generator_repeat():
 
             # minibatch gradient descent
@@ -491,5 +580,3 @@ class TrainPPOFlowAgent(TrainPPOAgent):
                 "noise_std": noise_stds,
                 "Q_values": Q_values
             }
-    
-    
