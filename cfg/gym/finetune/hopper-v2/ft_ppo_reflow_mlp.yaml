@@ -17,7 +17,7 @@ hydra:
 _target_: agent.finetune.reinflow.train_ppo_flow_agent.TrainPPOFlowAgent
 name: ${env_name}_ppo_reflow_mlp_ta${horizon_steps}_td${denoising_steps}
 logdir: ${oc.env:REINFLOW_LOG_DIR}/gym/finetune/${env_name}_ppo_reflow_mlp_ta${horizon_steps}_td${denoising_steps}_tdf${ft_denoising_steps}/${now:%Y-%m-%d}_${now:%H-%M-%S}_seed${seed}
-base_policy_path: ${oc.env:REINFLOW_LOG_DIR}/gym/pretrain/hopper-v2/ReFlow/2025-02-06_01-35-03_D4RL_42/state_40.pt
+base_policy_path: ${oc.env:REINFLOW_LOG_DIR}/log_gym_pretrained/hopper-v2/ReFlow/2025-02-06_01-35-03_42/checkpoint/state_1500.pt
 # ${oc.env:REINFLOW_LOG_DIR}/gym/pretrain/hopper-v2/ReFlow/2025-02-06_01-35-03_42/checkpoint/state_1500.pt
 normalization_path: ${oc.env:REINFLOW_DATA_DIR}/gym/${env_name}/normalization.npz
 resume_path: null
@@ -46,11 +46,12 @@ env:
 wandb:
   entity: ${oc.env:REINFLOW_WANDB_ENTITY}
   project: gym-${env_name}-finetune
-  run: ${now:%Y-%m-%d}_${now:%H-%M-%S}_${name}
+  run: ${now:%Y-%m-%d}_${now:%H-%M-%S}_${name}---vwarmup${train.v_warmup_itr}
   offline_mode: false
 train:
   n_train_itr: 1001
   n_critic_warmup_itr: 0
+  v_warmup_itr: 1
   n_steps: 500
   gamma: 0.99
   actor_lr: 4.5e-05
